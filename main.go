@@ -197,7 +197,7 @@ func main() {
 	})
 
 	// Returns the list of available RRD files.
-	http.HandleFunc("/list.json", func(w http.ResponseWriter, r *http.Request) {
+	http.HandleFunc("/list", func(w http.ResponseWriter, r *http.Request) {
 		logDebug("HTTP %s %s from %s", r.Method, r.URL.Path, r.RemoteAddr)
 		files, err := filepath.Glob("rrd/*.rrd")
 		if err != nil {
@@ -215,13 +215,13 @@ func main() {
 	})
 
 	// Returns metrics from one or all RRD files.
-	http.HandleFunc("/metrics.json", func(w http.ResponseWriter, r *http.Request) {
-		logDebug("HTTP %s %s%s from %s", r.Method, r.URL.Path, r.URL.RawQuery, r.RemoteAddr)
-		file := r.URL.Query().Get("file")
+	http.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
+		logDebug("HTTP %s %s?%s from %s", r.Method, r.URL.Path, r.URL.RawQuery, r.RemoteAddr)
+		fileParam := r.URL.Query().Get("rrd")
 
 		var files []string
 
-		if file == "" {
+		if fileParam == "" {
 			// No `file` was provided, read all files
 			var err error
 			files, err = filepath.Glob("rrd/*.rrd")
@@ -239,16 +239,28 @@ func main() {
 			}
 		} else {
 			// A `file` parameter was provided, try to read it
-			if !validateRRDFile(file) {
-				writeJSONError(w, http.StatusBadRequest, "Invalid filename", file)
-				return
+			// Grafana multi-value: {file1,file2,file3}
+			cleaned := strings.TrimSpace(fileParam)
+			cleaned = strings.TrimPrefix(cleaned, "{")
+			cleaned = strings.TrimSuffix(cleaned, "}")
+
+			// Split multi-values
+			parts := strings.Split(cleaned, ",")
+
+			for _, file := range parts {
+				file = strings.TrimSpace(file)
+
+				if !validateRRDFile(file) {
+					writeJSONError(w, http.StatusBadRequest, "Invalid filename", file)
+					return
+				}
+				full := filepath.Join("rrd", file)
+				if _, err := os.Stat(full); err != nil {
+					writeJSONError(w, http.StatusNotFound, "RRD file not found", file)
+					return
+				}
+				files = append(files, full)
 			}
-			full := filepath.Join("rrd", file)
-			if _, err := os.Stat(full); err != nil {
-				writeJSONError(w, http.StatusNotFound, "RRD file not found", file)
-				return
-			}
-			files = []string{full}
 		}
 
 		var all []Metric

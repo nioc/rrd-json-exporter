@@ -11,10 +11,11 @@ It is designed to integrate seamlessly with Grafana (via the [Infinity datasourc
 
 ## Key features
 
+- Lightweight (uses less than 20 MB of RAM)
 - RRD parsing via `rrdtool fetch`
 - JSON API endpoints
 - File‑level or bulk RRD export
-- Built‑in caching (30 seconds)
+- Built‑in caching
 
 ## Installation
 
@@ -64,13 +65,18 @@ Environment Variables
 Request the list of available RRD metric files
 
 ```http
-GET /list.json
+GET /list
 ```
 
 This returns a JSON array containing the available RRD metric files:
 
 ```json
-["server-docker_cpu-proxy-g.rrd", "server-docker_memory-proxy-g.rrd"]
+[
+  "server-docker_cpu-proxy-g.rrd",
+  "server-docker_cpu-nginx-g.rrd",
+  "server-docker_memory-proxy-g.rrd",
+  "server-docker_memory-nginx-g.rrd"
+]
 ```
 
 #### Get all RRD metrics
@@ -78,7 +84,7 @@ This returns a JSON array containing the available RRD metric files:
 Request all available RRD metrics
 
 ```http
-GET /metrics.json
+GET /metrics
 ```
 
 This returns a JSON object containing all metrics:
@@ -110,7 +116,7 @@ This returns a JSON object containing all metrics:
 Request a specific RRD metric by its filename
 
 ```http
-GET /metrics.json?file=filename.rrd
+GET /metrics?rrd=filename.rrd
 ```
 
 This returns a JSON object containing the requested metrics.
@@ -133,14 +139,14 @@ Use the Infinity Datasource plugin.
 
 #### Declare source
 
-- Home > Connections > Data sources > Add new data source
+- Home > Connections > Data sources > **Add new data source**
 - Select `Infinity` type
 - Choose a name
-- In _URL, Headers & Params_ set Base URL to `http://rrd-json-exporter:8080/`
+- In _URL, Headers & Params_ set Base URL to `http://rrd-json-exporter:8080/` (according to the name of your container)
 
 #### Use in dashboard
 
-- Add a variable: Settings > Variables > New variable
+- Add a variable: Settings > Variables > **New variable**
   - Type: `Query`
   - Name: `rrdfile`
   - Data source: select the Infinity source created before
@@ -148,19 +154,23 @@ Use the Infinity Datasource plugin.
   - Parser: `JQ`
   - Source: `URL`
   - Method: `GET`
-  - URL: `list.json`
+  - URL: `list`
+  - Multi-value: ✅
 
-- Add a visualization with:
+- Add a **visualization** with:
   - Data source: select the Infinity source created before
   - Type: `JSON`
   - Parser: `JSONata`
   - Source: `URL`
-  - Format: `Table`
+  - Format: `Time Series`
   - Method: `GET`
-  - URL: `metrics.json?file=${rrdfile}`
-  - Colmuns:
-    - selector: `timestamp`, format as `Time (UNIX s)`
-    - selector: `value`, format as `Number`
+  - URL: `metrics?rrd=${rrdfile}`
+  - In _Parsing options & Result fields_
+    - Root: `metrics`
+    - add 3 colmuns:
+      - selector: `timestamp`, format as `Time (UNIX s)`
+      - selector: `value`, format as `Number`
+      - selector: `name`, format as `String`
 
 ## Credits
 
