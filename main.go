@@ -294,6 +294,10 @@ func main() {
 		json.NewEncoder(w).Encode(Response{Metrics: all})
 	})
 
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		logError("HTTP %s %s?%s (404) from %s", r.Method, r.URL.Path, r.URL.RawQuery, r.RemoteAddr)
+	})
+
 	logInfo("RRD Exporter running on port %s", port)
 
 	err := http.ListenAndServe(":"+port, nil)
