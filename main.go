@@ -154,6 +154,27 @@ func validateRRDFile(name string) bool {
 	return validRRD.MatchString(name)
 }
 
+// Check Authorization
+func basicAuth(next http.HandlerFunc) http.HandlerFunc {
+	user := os.Getenv("AUTH_USER")
+	pass := os.Getenv("AUTH_PASS")
+
+	// Si pas configuré → pas d’auth
+	if user == "" || pass == "" {
+		return next
+	}
+
+	return func(w http.ResponseWriter, r *http.Request) {
+		u, p, ok := r.BasicAuth()
+		if !ok || u != user || p != pass {
+			w.Header().Set("WWW-Authenticate", `Basic realm="Restricted"`)
+			writeJSONError(w, http.StatusUnauthorized, "Unauthorized", nil)
+			return
+		}
+		next(w, r)
+	}
+}
+
 // Returns a simple OK status for container health checks.
 func healthHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
@@ -291,9 +312,9 @@ func main() {
 
 	http.HandleFunc("/health", healthHandler)
 
-	http.HandleFunc("/list", listHandler)
+	http.HandleFunc("/list", basicAuth(listHandler))
 
-	http.HandleFunc("/metrics", metricsHandler)
+	http.HandleFunc("/metrics", basicAuth(metricsHandler))
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		logError("HTTP %s %s?%s (404) from %s", r.Method, r.URL.Path, r.URL.RawQuery, r.RemoteAddr)

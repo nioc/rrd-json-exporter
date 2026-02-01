@@ -16,6 +16,7 @@ It is designed to integrate seamlessly with Grafana (via the [Infinity datasourc
 - JSON API endpoints
 - File‑level or bulk RRD export
 - Built‑in caching
+- Secured with basic authentication
 
 ## Installation
 
@@ -41,6 +42,8 @@ This can be used as docker container:
         LOG_LEVEL: debug
         # CACHE_TTL: 60
         # PORT: 8080
+        # AUTH_USER: myuser
+        # AUTH_PASS: mypassword
       volumes:
         - ./rrd:/app/rrd:ro
       ports:
@@ -55,6 +58,10 @@ Environment Variables
 | `LOG_LEVEL` | `info`  | Logging verbosity (`error`, `info`, `debug`)  |
 | `CACHE_TTL` | `60`    | Cache duration in seconds                     |
 | `PORT`      | `8080`  | Port the exporter listens on in the container |
+| `AUTH_USER` |         | User (basic authentication)                   |
+| `AUTH_PASS` |         | Password (basic authentication)               |
+
+NB: Basic authentication is only enabled if both the `AUTH_USER` and `AUTH_PASS` environment variables are provided.
 
 ## Usage
 
