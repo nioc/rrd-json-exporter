@@ -154,6 +154,113 @@ func validateRRDFile(name string) bool {
 	return validRRD.MatchString(name)
 }
 
+// Returns a simple OK status for container health checks.
+func healthHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{
+		"status": "ok",
+	})
+}
+
+// Returns the list of available RRD files.
+func listHandler(w http.ResponseWriter, r *http.Request) {
+	logDebug("HTTP %s %s from %s", r.Method, r.URL.Path, r.RemoteAddr)
+	files, err := filepath.Glob("rrd/*.rrd")
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "RRD directory read error", err.Error())
+		return
+	}
+
+	var names []string
+	for _, f := range files {
+		names = append(names, filepath.Base(f))
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(names)
+}
+
+// Returns metrics from one or all RRD files.
+func metricsHandler(w http.ResponseWriter, r *http.Request) {
+	logDebug("HTTP %s %s?%s from %s", r.Method, r.URL.Path, r.URL.RawQuery, r.RemoteAddr)
+	fileParam := r.URL.Query().Get("rrd")
+
+	var files []string
+
+	if fileParam == "" {
+		// No `file` was provided, read all files
+		var err error
+		files, err = filepath.Glob("rrd/*.rrd")
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "RRD directory read error", err.Error())
+			return
+		}
+		if len(files) == 0 {
+			writeJSONError(w, http.StatusNotFound, "No RRD files found", nil)
+			return
+		}
+		if len(files) > 100 {
+			writeJSONError(w, http.StatusBadRequest, "Too many RRD files", len(files))
+			return
+		}
+	} else {
+		// A `file` parameter was provided, try to read it
+		// Grafana multi-value: {file1,file2,file3}
+		cleaned := strings.TrimSpace(fileParam)
+		cleaned = strings.TrimPrefix(cleaned, "{")
+		cleaned = strings.TrimSuffix(cleaned, "}")
+
+		// Split multi-values
+		parts := strings.Split(cleaned, ",")
+
+		for _, file := range parts {
+			file = strings.TrimSpace(file)
+
+			if !validateRRDFile(file) {
+				writeJSONError(w, http.StatusBadRequest, "Invalid filename", file)
+				return
+			}
+			full := filepath.Join("rrd", file)
+			if _, err := os.Stat(full); err != nil {
+				writeJSONError(w, http.StatusNotFound, "RRD file not found", file)
+				return
+			}
+			files = append(files, full)
+		}
+	}
+
+	var all []Metric
+
+	for _, f := range files {
+		name := strings.TrimSuffix(filepath.Base(f), ".rrd")
+		// Try cache first
+		if cached, ok := getFromCache(f); ok {
+			logDebug("Cache hit for %s", f)
+			all = append(all, cached...)
+			continue
+		}
+
+		logDebug("Cache miss for %s", f)
+
+		metrics, err := readRRD(f, name)
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "RRD files reading error", err.Error())
+			return
+		}
+		if len(metrics) == 0 {
+			writeJSONError(w, http.StatusNotFound, "No data found in RRD file", filepath.Base(f))
+			return
+		}
+
+		setCache(f, metrics)
+		all = append(all, metrics...)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(all)
+}
+
 func main() {
 	// Get listening port
 	port := os.Getenv("PORT")
@@ -182,112 +289,11 @@ func main() {
 		logFatal("rrdtool not found in PATH")
 	}
 
-	// healthHandler returns a simple OK status for container health checks.
-	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{
-			"status": "ok",
-		})
-	})
+	http.HandleFunc("/health", healthHandler)
 
-	// Returns the list of available RRD files.
-	http.HandleFunc("/list", func(w http.ResponseWriter, r *http.Request) {
-		logDebug("HTTP %s %s from %s", r.Method, r.URL.Path, r.RemoteAddr)
-		files, err := filepath.Glob("rrd/*.rrd")
-		if err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "RRD directory read error", err.Error())
-			return
-		}
+	http.HandleFunc("/list", listHandler)
 
-		var names []string
-		for _, f := range files {
-			names = append(names, filepath.Base(f))
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(names)
-	})
-
-	// Returns metrics from one or all RRD files.
-	http.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
-		logDebug("HTTP %s %s?%s from %s", r.Method, r.URL.Path, r.URL.RawQuery, r.RemoteAddr)
-		fileParam := r.URL.Query().Get("rrd")
-
-		var files []string
-
-		if fileParam == "" {
-			// No `file` was provided, read all files
-			var err error
-			files, err = filepath.Glob("rrd/*.rrd")
-			if err != nil {
-				writeJSONError(w, http.StatusInternalServerError, "RRD directory read error", err.Error())
-				return
-			}
-			if len(files) == 0 {
-				writeJSONError(w, http.StatusNotFound, "No RRD files found", nil)
-				return
-			}
-			if len(files) > 100 {
-				writeJSONError(w, http.StatusBadRequest, "Too many RRD files", len(files))
-				return
-			}
-		} else {
-			// A `file` parameter was provided, try to read it
-			// Grafana multi-value: {file1,file2,file3}
-			cleaned := strings.TrimSpace(fileParam)
-			cleaned = strings.TrimPrefix(cleaned, "{")
-			cleaned = strings.TrimSuffix(cleaned, "}")
-
-			// Split multi-values
-			parts := strings.Split(cleaned, ",")
-
-			for _, file := range parts {
-				file = strings.TrimSpace(file)
-
-				if !validateRRDFile(file) {
-					writeJSONError(w, http.StatusBadRequest, "Invalid filename", file)
-					return
-				}
-				full := filepath.Join("rrd", file)
-				if _, err := os.Stat(full); err != nil {
-					writeJSONError(w, http.StatusNotFound, "RRD file not found", file)
-					return
-				}
-				files = append(files, full)
-			}
-		}
-
-		var all []Metric
-
-		for _, f := range files {
-			name := strings.TrimSuffix(filepath.Base(f), ".rrd")
-			// Try cache first
-			if cached, ok := getFromCache(f); ok {
-				logDebug("Cache hit for %s", f)
-				all = append(all, cached...)
-				continue
-			}
-
-			logDebug("Cache miss for %s", f)
-
-			metrics, err := readRRD(f, name)
-			if err != nil {
-				writeJSONError(w, http.StatusInternalServerError, "RRD files reading error", err.Error())
-				return
-			}
-			if len(metrics) == 0 {
-				writeJSONError(w, http.StatusNotFound, "No data found in RRD file", filepath.Base(f))
-				return
-			}
-
-			setCache(f, metrics)
-			all = append(all, metrics...)
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(all)
-	})
+	http.HandleFunc("/metrics", metricsHandler)
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		logError("HTTP %s %s?%s (404) from %s", r.Method, r.URL.Path, r.URL.RawQuery, r.RemoteAddr)
