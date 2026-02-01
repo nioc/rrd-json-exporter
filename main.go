@@ -19,14 +19,9 @@ var logLevel string
 
 // Metric represents a single datapoint extracted from an RRD file.
 type Metric struct {
-	Name      string  `json:"name"`
-	Timestamp int64   `json:"timestamp"`
-	Value     float64 `json:"value"`
-}
-
-// Response wraps a list of metrics for JSON output.
-type Response struct {
-	Metrics []Metric `json:"metrics"`
+	Name      string  `json:"n"`
+	Timestamp int64   `json:"t"`
+	Value     float64 `json:"v"`
 }
 
 // cacheEntry stores metrics and expiration timestamp.
@@ -291,7 +286,7 @@ func main() {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(Response{Metrics: all})
+		json.NewEncoder(w).Encode(all)
 	})
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {

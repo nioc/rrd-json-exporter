@@ -87,36 +87,46 @@ Request all available RRD metrics
 GET /metrics
 ```
 
-This returns a JSON object containing all metrics:
+This returns a JSON array containing all metrics:
 
 ```json
-{
-  "metrics": [
-    {
-      "name": "server-docker_cpu-proxy-g",
-      "timestamp": 1769878800,
-      "value": 1.9536137042
-    },
-    {
-      "name": "server-docker_cpu-proxy-g",
-      "timestamp": 1769879100,
-      "value": 2.1562561502
-    },
-    {
-      "name": "server-docker_cpu-proxy-g",
-      "timestamp": 1769879400,
-      "value": 1.2935769699
-    }
-  ]
-}
+[
+  {
+    "n": "server-docker_cpu-proxy-g",
+    "t": 1769878800,
+    "v": 1.9536137042
+  },
+  {
+    "n": "server-docker_cpu-proxy-g",
+    "t": 1769879100,
+    "v": 2.1562561502
+  },
+  {
+    "n": "server-docker_cpu-proxy-g",
+    "t": 1769879400,
+    "v": 1.2935769699
+  }
+]
 ```
 
-#### Get a specific RRD metric
+With the following attributes:
+
+- `n`: the **name** of the metric
+- `t`: the **Unix timestamp** in seconds
+- `v`: the **value** of the metric at that time
+
+#### Get specific RRD metrics
 
 Request a specific RRD metric by its filename
 
 ```http
 GET /metrics?rrd=filename.rrd
+```
+
+Request several specific RRD metrics by their file name
+
+```http
+GET /metrics?rrd={filename1.rrd,filename2.rrd}
 ```
 
 This returns a JSON object containing the requested metrics.
@@ -166,11 +176,10 @@ Use the Infinity Datasource plugin.
   - Method: `GET`
   - URL: `metrics?rrd=${rrdfile}`
   - In _Parsing options & Result fields_
-    - Root: `metrics`
     - add 3 colmuns:
-      - selector: `timestamp`, format as `Time (UNIX s)`
-      - selector: `value`, format as `Number`
-      - selector: `name`, format as `String`
+      - selector: `t`, format as `Time (UNIX s)`
+      - selector: `v`, format as `Number`
+      - selector: `n`, format as `String`
 
 ## Credits
 
