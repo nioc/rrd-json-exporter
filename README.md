@@ -69,10 +69,10 @@ NB: Basic authentication is only enabled if both the `AUTH_USER` and `AUTH_PASS`
 
 #### List RRD files
 
-Request the list of available RRD metric files
+Request a list of all available RRD metric files or those matching a regular expression (provided in the optionnal query parameter `filter`)
 
 ```http
-GET /list
+GET /list?filter=docker
 ```
 
 This returns a JSON array containing the available RRD metric files:

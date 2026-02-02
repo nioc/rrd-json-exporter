@@ -175,6 +175,29 @@ func basicAuth(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// Verifies that the regular expression compiles within a timeout while checking backtracking
+func compileRegexSafe(pattern string, timeout time.Duration) (*regexp.Regexp, error) {
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return nil, err
+	}
+
+	// Check backtracking
+	done := make(chan struct{})
+	go func() {
+		re.MatchString("")
+		close(done)
+	}()
+
+	// Handle timeout
+	select {
+	case <-done:
+		return re, nil
+	case <-time.After(timeout):
+		return nil, fmt.Errorf("regex evaluation timed out")
+	}
+}
+
 // Returns a simple OK status for container health checks.
 func healthHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
@@ -186,16 +209,34 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 
 // Returns the list of available RRD files.
 func listHandler(w http.ResponseWriter, r *http.Request) {
-	logDebug("HTTP %s %s from %s", r.Method, r.URL.Path, r.RemoteAddr)
-	files, err := filepath.Glob("rrd/*.rrd")
+	logDebug("HTTP %s %s?%s from %s", r.Method, r.URL.Path, r.URL.RawQuery, r.RemoteAddr)
+	files, err := os.ReadDir("rrd")
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "RRD directory read error", err.Error())
 		return
 	}
 
+	filter := r.URL.Query().Get("filter")
+	var re *regexp.Regexp
+	if filter != "" {
+		// Check the provided regex
+		re, err = compileRegexSafe(filter, 10*time.Millisecond)
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, "Invalid or unsafe regex", err.Error())
+			return
+		}
+	}
+
 	names := []string{}
 	for _, f := range files {
-		names = append(names, filepath.Base(f))
+		name := f.Name()
+
+		// Keep only rrd files matching the regex (if provided)
+		isRRD := strings.HasSuffix(name, ".rrd")
+		matches := re == nil || re.MatchString(name)
+		if isRRD && matches {
+			names = append(names, name)
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
