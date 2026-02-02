@@ -193,7 +193,7 @@ func listHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var names []string
+	names := []string{}
 	for _, f := range files {
 		names = append(names, filepath.Base(f))
 	}
