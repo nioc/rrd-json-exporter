@@ -17,6 +17,15 @@ import (
 
 var logLevel string
 
+// RRDInfo describes an RRD file created by Munin.
+type RRDInfo struct {
+	Nodename string `json:"nodename"`
+	Plugin   string `json:"plugin"`
+	Field    string `json:"field"`
+	Type     string `json:"type"`
+	Name     string `json:"name"`
+}
+
 // Metric represents a single datapoint extracted from an RRD file.
 type Metric struct {
 	Name      string  `json:"n"`
@@ -198,6 +207,47 @@ func compileRegexSafe(pattern string, timeout time.Duration) (*regexp.Regexp, er
 	}
 }
 
+// Parses the name of the rrd file created by munin to provide information about it.
+func parseRRDName(filename string) (*RRDInfo, error) {
+	if !strings.HasSuffix(filename, ".rrd") {
+		return nil, fmt.Errorf("not an rrd file")
+	}
+
+	base := strings.TrimSuffix(filename, ".rrd")
+	parts := strings.Split(base, "-")
+	if len(parts) < 4 {
+		return nil, fmt.Errorf("invalid rrd filename format")
+	}
+
+	nodename := parts[0]
+	plugin := parts[1]
+	// handles fields with hyphens
+	field := strings.Join(parts[2:len(parts)-1], "-")
+	rrdType := parts[len(parts)-1]
+
+	var typeName string
+	switch rrdType {
+	case "g":
+		typeName = "gauge"
+	case "d":
+		typeName = "derive"
+	case "a":
+		typeName = "absolute"
+	case "c":
+		typeName = "counter"
+	default:
+		typeName = rrdType
+	}
+
+	return &RRDInfo{
+		Nodename: nodename,
+		Plugin:   plugin,
+		Field:    field,
+		Type:     typeName,
+		Name:     filename,
+	}, nil
+}
+
 // Returns a simple OK status for container health checks.
 func healthHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
@@ -217,6 +267,7 @@ func listHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	filter := r.URL.Query().Get("filter")
+	isDetailled := r.URL.Query().Has("details")
 	var re *regexp.Regexp
 	if filter != "" {
 		// Check the provided regex
@@ -240,7 +291,26 @@ func listHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(names)
+	if isDetailled {
+		namesWithDetails := make([]RRDInfo, 0, len(names))
+		for _, name := range names {
+			info, err := parseRRDName(name)
+			if err != nil {
+				namesWithDetails = append(namesWithDetails, RRDInfo{
+					Nodename: "?",
+					Plugin:   "?",
+					Field:    "?",
+					Type:     "?",
+					Name:     name,
+				})
+				continue
+			}
+			namesWithDetails = append(namesWithDetails, *info)
+		}
+		json.NewEncoder(w).Encode(namesWithDetails)
+	} else {
+		json.NewEncoder(w).Encode(names)
+	}
 }
 
 // Returns metrics from one or all RRD files.

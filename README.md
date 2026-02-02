@@ -14,6 +14,7 @@ It is designed to integrate seamlessly with Grafana (via the [Infinity datasourc
 - Lightweight (uses less than 20 MB of RAM)
 - RRD parsing via `rrdtool fetch`
 - JSON API endpoints
+- Search for RRD files by regular expression with detailed description (node, plugin, field, and type)
 - File‑level or bulk RRD export
 - Built‑in caching
 - Secured with basic authentication
@@ -83,6 +84,31 @@ This returns a JSON array containing the available RRD metric files:
   "server-docker_cpu-nginx-g.rrd",
   "server-docker_memory-proxy-g.rrd",
   "server-docker_memory-nginx-g.rrd"
+]
+```
+
+You can also send a query parameter `details` to get a description of each RRD file:
+
+```http
+GET /list?filter=docker&details
+```
+
+```json
+[
+  {
+    "nodename": "server",
+    "plugin": "docker_cpu",
+    "field": "proxy",
+    "type": "gauge",
+    "name": "server-docker_cpu-proxy-g.rrd"
+  },
+  {
+    "nodename": "server",
+    "plugin": "docker_memory",
+    "field": "proxy",
+    "type": "gauge",
+    "name": "server-docker_memory-proxy-g.rrd"
+  }
 ]
 ```
 
