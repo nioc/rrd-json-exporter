@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -33,14 +34,21 @@ type Metric struct {
 	Value     float64 `json:"v"`
 }
 
-// cacheEntry stores metrics and expiration timestamp.
-type cacheEntry struct {
+// CacheEntry stores metrics and expiration timestamp.
+type CacheEntry struct {
 	Metrics    []Metric
 	Expiration int64
 }
 
+// ErrorResponse represents an error.
+type ErrorResponse struct {
+	Status  string `json:"status"`
+	Message string `json:"message"`
+	Details any    `json:"details"`
+}
+
 var (
-	cache      = make(map[string]cacheEntry)
+	cache      = make(map[string]CacheEntry)
 	cacheMutex sync.RWMutex
 	cacheTTL   int64 = 60 // default TTL in seconds
 )
@@ -75,11 +83,7 @@ func writeJSONError(w http.ResponseWriter, status int, message string, details a
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 
-	json.NewEncoder(w).Encode(map[string]any{
-		"status":  "error",
-		"message": message,
-		"details": details,
-	})
+	json.NewEncoder(w).Encode(ErrorResponse{"error", message, details})
 }
 
 // Caching functions
@@ -98,7 +102,7 @@ func getFromCache(key string) ([]Metric, bool) {
 // setCache stores metrics in the cache.
 func setCache(key string, metrics []Metric) {
 	cacheMutex.Lock()
-	cache[key] = cacheEntry{
+	cache[key] = CacheEntry{
 		Metrics:    metrics,
 		Expiration: time.Now().Unix() + cacheTTL,
 	}
@@ -115,30 +119,30 @@ func readRRD(path string, name string) ([]Metric, error) {
 		return nil, fmt.Errorf("rrdtool error: %w", err)
 	}
 
-	lines := strings.Split(string(out), "\n")
+	lines := bytes.Split(out, []byte{'\n'})
 	var metrics []Metric
 
 	// Ignore first 2 lines (headers)
 	for _, line := range lines[2:] {
-		fields := strings.Fields(line)
+		fields := bytes.Fields(line)
 		if len(fields) != 2 {
 			continue
 		}
 
 		// Get timestamp
-		tsStr := strings.TrimSuffix(fields[0], ":")
-		ts, err := strconv.ParseInt(tsStr, 10, 64)
+		tsBytes := bytes.TrimSuffix(fields[0], []byte{':'})
+		ts, err := strconv.ParseInt(string(tsBytes), 10, 64)
 		if err != nil {
 			continue
 		}
 
 		// Get value
-		valStr := strings.ReplaceAll(fields[1], ",", ".")
-		if strings.Contains(valStr, "nan") {
+		valBytes := bytes.ReplaceAll(fields[1], []byte(","), []byte("."))
+		if bytes.Contains(valBytes, []byte("nan")) {
 			continue
 		}
 
-		val, err := strconv.ParseFloat(valStr, 64)
+		val, err := strconv.ParseFloat(string(valBytes), 64)
 		if err != nil {
 			continue
 		}
@@ -279,13 +283,11 @@ func listHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	names := []string{}
-	for _, f := range files {
-		name := f.Name()
+	for _, file := range files {
+		name := file.Name()
 
 		// Keep only rrd files matching the regex (if provided)
-		isRRD := strings.HasSuffix(name, ".rrd")
-		matches := re == nil || re.MatchString(name)
-		if isRRD && matches {
+		if strings.HasSuffix(name, ".rrd") && (re == nil || re.MatchString(name)) {
 			names = append(names, name)
 		}
 	}
@@ -339,14 +341,12 @@ func metricsHandler(w http.ResponseWriter, r *http.Request) {
 	} else {
 		// A `file` parameter was provided, try to read it
 		// Grafana multi-value: {file1,file2,file3}
-		cleaned := strings.TrimSpace(fileParam)
-		cleaned = strings.TrimPrefix(cleaned, "{")
-		cleaned = strings.TrimSuffix(cleaned, "}")
+		cleaned := strings.Trim(fileParam, " {}")
 
 		// Split multi-values
-		parts := strings.Split(cleaned, ",")
+		parts := strings.SplitSeq(cleaned, ",")
 
-		for _, file := range parts {
+		for file := range parts {
 			file = strings.TrimSpace(file)
 
 			if !validateRRDFile(file) {
