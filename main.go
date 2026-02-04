@@ -51,6 +51,9 @@ var (
 	cacheTTL   int64 = 60 // default TTL in seconds
 )
 
+// Default rounding "from" and "to" timestamps to 300 seconds (5 minutes)
+var roundStep = int64(300)
+
 // writeJSONError sends a structured JSON error response and logs it.
 func writeJSONError(w http.ResponseWriter, status int, message string, details any) {
 	logger.Error("%s | details: %v", message, details)
@@ -62,6 +65,12 @@ func writeJSONError(w http.ResponseWriter, status int, message string, details a
 }
 
 // Caching functions
+
+// getCacheKey returns the cache key corresponding to the request.
+func getCacheKey(path string, start, end int64) string {
+	return fmt.Sprintf("%s|%d|%d", path, start, end)
+}
+
 // getFromCache returns cached metrics if still valid.
 func getFromCache(key string) ([]Metric, bool) {
 	cacheMutex.RLock()
@@ -85,8 +94,16 @@ func setCache(key string, metrics []Metric) {
 }
 
 // readRRD executes "rrdtool fetch" and parses the output into metrics.
-func readRRD(path string, name string) ([]Metric, error) {
-	cmd := exec.Command("rrdtool", "fetch", path, "AVERAGE")
+func readRRD(path string, name string, start, end int64) ([]Metric, error) {
+	args := []string{"fetch", path, "AVERAGE"}
+	if start > 0 {
+		args = append(args, "--start", strconv.FormatInt(start, 10))
+	}
+	if end > 0 {
+		args = append(args, "--end", strconv.FormatInt(end, 10))
+	}
+	logger.Trace("Cmd: rrdtool %s", strings.Join(args, " "))
+	cmd := exec.Command("rrdtool", args...)
 	cmd.Env = append(os.Environ(), "LC_NUMERIC=C")
 
 	out, err := cmd.Output()
@@ -128,6 +145,7 @@ func readRRD(path string, name string) ([]Metric, error) {
 			Value:     val,
 		})
 	}
+	logger.Trace("Found %d values in %s", len(metrics), name)
 
 	return metrics, nil
 }
@@ -227,6 +245,28 @@ func parseRRDName(filename string) (*RRDInfo, error) {
 	}, nil
 }
 
+// Converts a timestamp string in milliseconds to an integer in seconds.
+func getTimestamp(tsStr string, isFrom bool) int64 {
+	if tsStr != "" {
+		tsMs, err := strconv.ParseInt(tsStr, 10, 64)
+		if err != nil {
+			name := "to"
+			if isFrom {
+				name = "from"
+			}
+			logger.Error("Invalid \"%s\" value %s, error: %v", name, tsStr, err.Error())
+		} else {
+			var sec int64 = tsMs / 1000
+			if isFrom {
+				return (sec / roundStep) * roundStep
+			} else {
+				return ((sec + roundStep - 1) / roundStep) * roundStep
+			}
+		}
+	}
+	return 0
+}
+
 // Returns a simple OK status for container health checks.
 func healthHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
@@ -295,6 +335,10 @@ func metricsHandler(w http.ResponseWriter, r *http.Request) {
 	logger.Debug("HTTP %s %s?%s from %s", r.Method, r.URL.Path, r.URL.RawQuery, r.RemoteAddr)
 	fileParam := r.URL.Query().Get("rrd")
 
+	// Get time range (expected in ms)
+	start := getTimestamp(r.URL.Query().Get("from"), true)
+	end := getTimestamp(r.URL.Query().Get("to"), false)
+
 	var files []string
 
 	if fileParam == "" {
@@ -342,15 +386,16 @@ func metricsHandler(w http.ResponseWriter, r *http.Request) {
 	for _, file := range files {
 		name := strings.TrimSuffix(filepath.Base(file), ".rrd")
 		// Try cache first
-		if cached, ok := getFromCache(file); ok {
-			logger.Debug("Cache hit for %s", file)
+		key := getCacheKey(file, start, end)
+		if cached, ok := getFromCache(key); ok {
+			logger.Debug("Cache hit for %s", key)
 			all = append(all, cached...)
 			continue
 		}
 
-		logger.Debug("Cache miss for %s", file)
+		logger.Debug("Cache miss for %s", key)
 
-		metrics, err := readRRD(file, name)
+		metrics, err := readRRD(file, name, start, end)
 		if err != nil {
 			writeJSONError(w, http.StatusInternalServerError, "RRD files reading error", err.Error())
 			return
@@ -360,7 +405,7 @@ func metricsHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		setCache(file, metrics)
+		setCache(key, metrics)
 		all = append(all, metrics...)
 	}
 
@@ -378,6 +423,22 @@ func main() {
 	// Get log level
 	logLevel := os.Getenv("LOG_LEVEL")
 	logger.SetLevel(logLevel)
+
+	// Check rrdtool
+	if _, err := exec.LookPath("rrdtool"); err != nil {
+		logger.Fatal("rrdtool not found in PATH")
+	}
+
+	// Get round step
+	if roundStepStr := os.Getenv("ROUND_STEP"); roundStepStr != "" {
+		if rs, err := strconv.ParseInt(roundStepStr, 10, 64); err == nil && rs > 0 {
+			roundStep = rs
+			logger.Info("Rounding \"from\" and \"to\" timestamps to %d seconds", roundStep)
+		} else {
+			logger.Error("Invalid ROUND_STEP value: %s", roundStepStr)
+		}
+	}
+
 	// Get cache TTL
 	if ttlStr := os.Getenv("CACHE_TTL"); ttlStr != "" {
 		if ttl, err := strconv.ParseInt(ttlStr, 10, 64); err == nil && ttl > 0 {
@@ -386,11 +447,6 @@ func main() {
 		} else {
 			logger.Error("Invalid CACHE_TTL value: %s", ttlStr)
 		}
-	}
-
-	// Check rrdtool
-	if _, err := exec.LookPath("rrdtool"); err != nil {
-		logger.Fatal("rrdtool not found in PATH")
 	}
 
 	http.HandleFunc("/health", healthHandler)

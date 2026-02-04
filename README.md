@@ -15,7 +15,7 @@ It is designed to integrate seamlessly with Grafana (via the [Infinity datasourc
 - RRD parsing via `rrdtool fetch`
 - JSON API endpoints
 - Search for RRD files by regular expression with detailed description (node, plugin, field, and type)
-- File‑level or bulk RRD export
+- File‑level or bulk RRD export within time range
 - Built‑in caching
 - Secured with basic authentication
 
@@ -42,6 +42,7 @@ This can be used as docker container:
       environment:
         LOG_LEVEL: debug
         # CACHE_TTL: 60
+        # ROUND_STEP: 60
         # PORT: 8080
         # AUTH_USER: myuser
         # AUTH_PASS: mypassword
@@ -54,13 +55,14 @@ This can be used as docker container:
 
 Environment Variables
 
-| Variable    | Default | Description                                   |
-| ----------- | ------- | --------------------------------------------- |
-| `LOG_LEVEL` | `info`  | Logging verbosity (`error`, `info`, `debug`)  |
-| `CACHE_TTL` | `60`    | Cache duration in seconds                     |
-| `PORT`      | `8080`  | Port the exporter listens on in the container |
-| `AUTH_USER` |         | User (basic authentication)                   |
-| `AUTH_PASS` |         | Password (basic authentication)               |
+| Variable     | Default | Description                                   |
+| ------------ | ------- | --------------------------------------------- |
+| `LOG_LEVEL`  | `info`  | Logging verbosity (`error`, `info`, `debug`)  |
+| `CACHE_TTL`  | `60`    | Cache duration in seconds                     |
+| `ROUND_STEP` | `300`   | Rounding `from` and `to` timestamps           |
+| `PORT`       | `8080`  | Port the exporter listens on in the container |
+| `AUTH_USER`  |         | User (basic authentication)                   |
+| `AUTH_PASS`  |         | Password (basic authentication)               |
 
 NB: Basic authentication is only enabled if both the `AUTH_USER` and `AUTH_PASS` environment variables are provided.
 
@@ -164,6 +166,14 @@ GET /metrics?rrd={filename1.rrd,filename2.rrd}
 
 This returns a JSON object containing the requested metrics.
 
+#### Get metrics within a time range
+
+Request metric(s) for a specific time range between `from` and `to` (expressed in ms)
+
+```http
+GET /metrics?rrd=filename.rrd&from=1770146257895&to=1770167857895
+```
+
 #### Error messages
 
 In case of an error, the message has the following structure with proper HTTP status codes:
@@ -207,12 +217,14 @@ Use the Infinity Datasource plugin.
   - Source: `URL`
   - Format: `Time Series`
   - Method: `GET`
-  - URL: `metrics?rrd=${rrdfile}`
+  - URL: `metrics?rrd=${rrdfile}&from=${__from}&to=${__to}`
   - In _Parsing options & Result fields_
     - add 3 colmuns:
       - selector: `t`, format as `Time (UNIX s)`
       - selector: `v`, format as `Number`
       - selector: `n`, format as `String`
+  - [optionnal for multi metrics] Add a `Partition by values` transformation with `n` field
+  - [optionnal for multi metrics] Add a `Rename fields by regex` transformation
 
 ## Credits
 
