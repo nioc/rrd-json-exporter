@@ -93,6 +93,27 @@ func setCache(key string, metrics []Metric) {
 	cacheMutex.Unlock()
 }
 
+// startCacheCleaner initializes regular cache cleaning.
+func startCacheCleaner() {
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+
+		for range ticker.C {
+			logger.Trace("Performing cache purge")
+			now := time.Now().Unix()
+			cacheMutex.Lock()
+			for key, entry := range cache {
+				if entry.Expiration < now {
+					logger.Trace("Removing the cache key %s", key)
+					delete(cache, key)
+				}
+			}
+			cacheMutex.Unlock()
+		}
+	}()
+}
+
 // readRRD executes "rrdtool fetch" and parses the output into metrics.
 func readRRD(path string, name string, start, end int64) ([]Metric, error) {
 	args := []string{"fetch", path, "AVERAGE"}
@@ -460,6 +481,8 @@ func main() {
 	})
 
 	logger.Info("RRD JSON Exporter running on port %s", port)
+
+	startCacheCleaner()
 
 	err := http.ListenAndServe(":"+port, nil)
 	if err != nil {
