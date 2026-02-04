@@ -29,7 +29,7 @@ This can be used as docker container:
   docker run -it -p 9090:808080 --rm \
   -v $(pwd)/rrd:/app/rrd:ro \
   -e LOG_LEVEL=debug \
-  -e CACHE_TTL=60 \
+  -e CACHE_TTL_METRICS=60 \
   --name rrd-json-exporter nioc/rrd-json-exporter:latest
   ```
 
@@ -41,7 +41,8 @@ This can be used as docker container:
       container_name: rrd-json-exporter
       environment:
         LOG_LEVEL: debug
-        # CACHE_TTL: 60
+        # CACHE_TTL_LIST: 1800
+        # CACHE_TTL_METRICS: 60
         # ROUND_STEP: 60
         # PORT: 8080
         # AUTH_USER: myuser
@@ -55,14 +56,15 @@ This can be used as docker container:
 
 Environment Variables
 
-| Variable     | Default | Description                                   |
-| ------------ | ------- | --------------------------------------------- |
-| `LOG_LEVEL`  | `info`  | Logging verbosity (`error`, `info`, `debug`)  |
-| `CACHE_TTL`  | `60`    | Cache duration in seconds                     |
-| `ROUND_STEP` | `300`   | Rounding `from` and `to` timestamps           |
-| `PORT`       | `8080`  | Port the exporter listens on in the container |
-| `AUTH_USER`  |         | User (basic authentication)                   |
-| `AUTH_PASS`  |         | Password (basic authentication)               |
+| Variable            | Default | Description                                    |
+| ------------------- | ------- | ---------------------------------------------- |
+| `LOG_LEVEL`         | `info`  | Logging verbosity (`error`, `info`, `debug`)   |
+| `CACHE_TTL_LIST`    | `1800`  | File name cache duration in seconds (`/list`)  |
+| `CACHE_TTL_METRICS` | `60`    | Metrics cache duration in seconds (`/metrics`) |
+| `ROUND_STEP`        | `300`   | Rounding `from` and `to` timestamps            |
+| `PORT`              | `8080`  | Port the exporter listens on in the container  |
+| `AUTH_USER`         |         | User (basic authentication)                    |
+| `AUTH_PASS`         |         | Password (basic authentication)                |
 
 NB: Basic authentication is only enabled if both the `AUTH_USER` and `AUTH_PASS` environment variables are provided.
 

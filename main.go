@@ -32,8 +32,14 @@ type Metric struct {
 	Value     float64 `json:"v"`
 }
 
-// CacheEntry stores metrics and expiration timestamp.
-type CacheEntry struct {
+// ListCacheEntry stores rrd files name and expiration timestamp.
+type ListCacheEntry struct {
+	List       []byte
+	Expiration int64
+}
+
+// MetricsCacheEntry stores metrics and expiration timestamp.
+type MetricsCacheEntry struct {
 	Metrics    []Metric
 	Expiration int64
 }
@@ -46,9 +52,14 @@ type ErrorResponse struct {
 }
 
 var (
-	cache      = make(map[string]CacheEntry)
-	cacheMutex sync.RWMutex
-	cacheTTL   int64 = 60 // default TTL in seconds
+	listCache      = map[string]ListCacheEntry{}
+	listCacheMutex sync.RWMutex
+	listCacheTTL   int64 = 1800 // default TTL in seconds
+)
+var (
+	metricsCache      = make(map[string]MetricsCacheEntry)
+	metricsCacheMutex sync.RWMutex
+	metricsCacheTTL   int64 = 60 // default TTL in seconds
 )
 
 // Default rounding "from" and "to" timestamps to 300 seconds (5 minutes)
@@ -66,16 +77,34 @@ func writeJSONError(w http.ResponseWriter, status int, message string, details a
 
 // Caching functions
 
-// getCacheKey returns the cache key corresponding to the request.
-func getCacheKey(path string, start, end int64) string {
+// getListCacheKey returns the cache key corresponding to the /list request.
+func getListCacheKey(filter string, details bool) string {
+	return fmt.Sprintf("list|%s|%t", filter, details)
+}
+
+// getMetricsCacheKey returns the cache key corresponding to the request.
+func getMetricsCacheKey(path string, start, end int64) string {
 	return fmt.Sprintf("%s|%d|%d", path, start, end)
 }
 
-// getFromCache returns cached metrics if still valid.
-func getFromCache(key string) ([]Metric, bool) {
-	cacheMutex.RLock()
-	entry, ok := cache[key]
-	cacheMutex.RUnlock()
+// getListFromCache returns cached RRD files list if still valid.
+func getListFromCache(key string) ([]byte, bool) {
+	listCacheMutex.RLock()
+	entry, ok := listCache[key]
+	listCacheMutex.RUnlock()
+
+	if !ok || time.Now().Unix() > entry.Expiration {
+		return nil, false
+	}
+
+	return entry.List, true
+}
+
+// getMetricsFromCache returns cached metrics if still valid.
+func getMetricsFromCache(key string) ([]Metric, bool) {
+	metricsCacheMutex.RLock()
+	entry, ok := metricsCache[key]
+	metricsCacheMutex.RUnlock()
 
 	if !ok || time.Now().Unix() > entry.Expiration {
 		return nil, false
@@ -83,33 +112,65 @@ func getFromCache(key string) ([]Metric, bool) {
 	return entry.Metrics, true
 }
 
-// setCache stores metrics in the cache.
-func setCache(key string, metrics []Metric) {
-	cacheMutex.Lock()
-	cache[key] = CacheEntry{
-		Metrics:    metrics,
-		Expiration: time.Now().Unix() + cacheTTL,
+// setListCache stores RRD files list in the cache.
+func setListCache(key string, list []byte) {
+	listCacheMutex.Lock()
+	listCache[key] = ListCacheEntry{
+		List:       list,
+		Expiration: time.Now().Unix() + listCacheTTL,
 	}
-	cacheMutex.Unlock()
+	listCacheMutex.Unlock()
+}
+
+// setMetricsCache stores metrics in the cache.
+func setMetricsCache(key string, metrics []Metric) {
+	metricsCacheMutex.Lock()
+	metricsCache[key] = MetricsCacheEntry{
+		Metrics:    metrics,
+		Expiration: time.Now().Unix() + metricsCacheTTL,
+	}
+	metricsCacheMutex.Unlock()
+}
+
+// getTtl reads environment variable and returns its value.
+func getTtl(key string) (int64, bool) {
+	if ttlStr := os.Getenv(key); ttlStr != "" {
+		if ttl, err := strconv.ParseInt(ttlStr, 10, 64); err == nil && ttl > 0 {
+			return ttl, true
+		} else {
+			logger.Error("Invalid %s value: %s", key, ttlStr)
+		}
+	}
+	return 0, false
 }
 
 // startCacheCleaner initializes regular cache cleaning.
 func startCacheCleaner() {
 	go func() {
-		ticker := time.NewTicker(5 * time.Minute)
+		ticker := time.NewTicker(10 * time.Minute)
 		defer ticker.Stop()
 
 		for range ticker.C {
 			logger.Trace("Performing cache purge")
 			now := time.Now().Unix()
-			cacheMutex.Lock()
-			for key, entry := range cache {
+
+			metricsCacheMutex.Lock()
+			for key, entry := range metricsCache {
 				if entry.Expiration < now {
-					logger.Trace("Removing the cache key %s", key)
-					delete(cache, key)
+					logger.Trace("Removing the metrics cache key %s", key)
+					delete(metricsCache, key)
 				}
 			}
-			cacheMutex.Unlock()
+			metricsCacheMutex.Unlock()
+
+			listCacheMutex.Lock()
+			for key, entry := range listCache {
+				if entry.Expiration < now {
+					logger.Trace("Removing the list cache key %s", key)
+					delete(listCache, key)
+				}
+			}
+			listCacheMutex.Unlock()
 		}
 	}()
 }
@@ -300,14 +361,28 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 // Returns the list of available RRD files.
 func listHandler(w http.ResponseWriter, r *http.Request) {
 	logger.Debug("HTTP %s %s?%s from %s", r.Method, r.URL.Path, r.URL.RawQuery, r.RemoteAddr)
+
+	filter := r.URL.Query().Get("filter")
+	isDetailled := r.URL.Query().Has("details")
+	key := getListCacheKey(filter, isDetailled)
+
+	w.Header().Set("Content-Type", "application/json")
+
+	// Try cache first
+	if list, ok := getListFromCache(key); ok {
+		logger.Trace("Cache hit for /list key=%s", key)
+		w.Write(list)
+		return
+	}
+
+	logger.Trace("Cache miss for /list key=%s", key)
+
 	files, err := os.ReadDir("rrd")
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "RRD directory read error", err.Error())
 		return
 	}
 
-	filter := r.URL.Query().Get("filter")
-	isDetailled := r.URL.Query().Has("details")
 	var re *regexp.Regexp
 	if filter != "" {
 		// Check the provided regex
@@ -318,7 +393,7 @@ func listHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	names := []string{}
+	names := make([]string, 0, len(files))
 	for _, file := range files {
 		name := file.Name()
 
@@ -328,7 +403,7 @@ func listHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
+	var list []byte
 	if isDetailled {
 		namesWithDetails := make([]RRDInfo, 0, len(names))
 		for _, name := range names {
@@ -345,10 +420,20 @@ func listHandler(w http.ResponseWriter, r *http.Request) {
 			}
 			namesWithDetails = append(namesWithDetails, *info)
 		}
-		json.NewEncoder(w).Encode(namesWithDetails)
+		list, err = json.Marshal(namesWithDetails)
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "JSON encoding error", err.Error())
+			return
+		}
 	} else {
-		json.NewEncoder(w).Encode(names)
+		list, err = json.Marshal(names)
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "JSON encoding error", err.Error())
+			return
+		}
 	}
+	setListCache(key, list)
+	w.Write(list)
 }
 
 // Returns metrics from one or all RRD files.
@@ -407,8 +492,8 @@ func metricsHandler(w http.ResponseWriter, r *http.Request) {
 	for _, file := range files {
 		name := strings.TrimSuffix(filepath.Base(file), ".rrd")
 		// Try cache first
-		key := getCacheKey(file, start, end)
-		if cached, ok := getFromCache(key); ok {
+		key := getMetricsCacheKey(file, start, end)
+		if cached, ok := getMetricsFromCache(key); ok {
 			logger.Trace("Cache hit for %s", key)
 			all = append(all, cached...)
 			continue
@@ -426,7 +511,7 @@ func metricsHandler(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		setCache(key, metrics)
+		setMetricsCache(key, metrics)
 		all = append(all, metrics...)
 	}
 
@@ -461,14 +546,15 @@ func main() {
 	}
 
 	// Get cache TTL
-	if ttlStr := os.Getenv("CACHE_TTL"); ttlStr != "" {
-		if ttl, err := strconv.ParseInt(ttlStr, 10, 64); err == nil && ttl > 0 {
-			cacheTTL = ttl
-			logger.Info("Cache TTL set to %d seconds", cacheTTL)
-		} else {
-			logger.Error("Invalid CACHE_TTL value: %s", ttlStr)
-		}
+	if ttl, ok := getTtl("CACHE_TTL_METRICS"); ok {
+		metricsCacheTTL = ttl
 	}
+	logger.Info("Metrics cache TTL set to %d seconds", metricsCacheTTL)
+
+	if ttl, ok := getTtl("CACHE_TTL_LIST"); ok {
+		listCacheTTL = ttl
+	}
+	logger.Info("List cache TTL set to %d seconds", listCacheTTL)
 
 	http.HandleFunc("/health", healthHandler)
 
