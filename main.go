@@ -388,12 +388,12 @@ func metricsHandler(w http.ResponseWriter, r *http.Request) {
 		// Try cache first
 		key := getCacheKey(file, start, end)
 		if cached, ok := getFromCache(key); ok {
-			logger.Debug("Cache hit for %s", key)
+			logger.Trace("Cache hit for %s", key)
 			all = append(all, cached...)
 			continue
 		}
 
-		logger.Debug("Cache miss for %s", key)
+		logger.Trace("Cache miss for %s", key)
 
 		metrics, err := readRRD(file, name, start, end)
 		if err != nil {
@@ -433,7 +433,7 @@ func main() {
 	if roundStepStr := os.Getenv("ROUND_STEP"); roundStepStr != "" {
 		if rs, err := strconv.ParseInt(roundStepStr, 10, 64); err == nil && rs > 0 {
 			roundStep = rs
-			logger.Info("Rounding \"from\" and \"to\" timestamps to %d seconds", roundStep)
+			logger.Info("Rounding step (from and to timestamps) set to %d seconds", roundStep)
 		} else {
 			logger.Error("Invalid ROUND_STEP value: %s", roundStepStr)
 		}
@@ -459,7 +459,7 @@ func main() {
 		logger.Error("HTTP %s %s?%s (404) from %s", r.Method, r.URL.Path, r.URL.RawQuery, r.RemoteAddr)
 	})
 
-	logger.Info("RRD Exporter running on port %s", port)
+	logger.Info("RRD JSON Exporter running on port %s", port)
 
 	err := http.ListenAndServe(":"+port, nil)
 	if err != nil {

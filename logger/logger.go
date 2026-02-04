@@ -40,7 +40,7 @@ func SetLevel(level string) {
 	default:
 		currentLevel = LevelInfo
 	}
-	Debug("Current log level is set to %s", levelTags[currentLevel])
+	Debug("Current log level set to %s", levelTags[currentLevel])
 }
 
 func logMsg(level LogLevel, msg string, args ...any) {
