@@ -1,8 +1,8 @@
-FROM alpine:3.20 AS base
+FROM alpine:3.23 AS base
 
 RUN addgroup -S rrd && adduser -S rrd -G rrd
 
-FROM golang:1.24-alpine AS builder
+FROM golang:1.25-alpine AS builder
 RUN apk add --no-cache build-base
 WORKDIR /app
 COPY go.mod go.sum ./
@@ -24,6 +24,7 @@ VOLUME ["/app/rrd"]
 ENV PORT=8080
 ENV LOG_LEVEL=info
 ENV CACHE_TTL=60
+ENV ROUND_STEP=300
 
 EXPOSE 8080
 
