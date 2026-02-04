@@ -374,8 +374,8 @@ func metricsHandler(w http.ResponseWriter, r *http.Request) {
 			}
 			full := filepath.Join("rrd", file)
 			if _, err := os.Stat(full); err != nil {
-				writeJSONError(w, http.StatusNotFound, "RRD file not found", file)
-				return
+				logger.Error("RRD file %s not found", file)
+				continue
 			}
 			files = append(files, full)
 		}
