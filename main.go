@@ -4,19 +4,17 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"rrd-json-exporter/logger"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
-
-var logLevel string
 
 // RRDInfo describes an RRD file created by Munin.
 type RRDInfo struct {
@@ -53,32 +51,9 @@ var (
 	cacheTTL   int64 = 60 // default TTL in seconds
 )
 
-// Logging helpers
-func logDebug(msg string, args ...any) {
-	if logLevel == "debug" {
-		log.Printf("[DEBUG] "+msg, args...)
-	}
-}
-
-func logInfo(msg string, args ...any) {
-	if logLevel == "info" || logLevel == "debug" {
-		log.Printf("[INFO] "+msg, args...)
-	}
-}
-
-func logError(msg string, args ...any) {
-	if logLevel == "error" || logLevel == "info" || logLevel == "debug" {
-		log.Printf("[ERROR] "+msg, args...)
-	}
-}
-
-func logFatal(msg string, args ...any) {
-	log.Fatalf("[FATAL] "+msg, args...)
-}
-
 // writeJSONError sends a structured JSON error response and logs it.
 func writeJSONError(w http.ResponseWriter, status int, message string, details any) {
-	logError("%s | details: %v", message, details)
+	logger.Error("%s | details: %v", message, details)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -263,7 +238,7 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 
 // Returns the list of available RRD files.
 func listHandler(w http.ResponseWriter, r *http.Request) {
-	logDebug("HTTP %s %s?%s from %s", r.Method, r.URL.Path, r.URL.RawQuery, r.RemoteAddr)
+	logger.Debug("HTTP %s %s?%s from %s", r.Method, r.URL.Path, r.URL.RawQuery, r.RemoteAddr)
 	files, err := os.ReadDir("rrd")
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "RRD directory read error", err.Error())
@@ -317,7 +292,7 @@ func listHandler(w http.ResponseWriter, r *http.Request) {
 
 // Returns metrics from one or all RRD files.
 func metricsHandler(w http.ResponseWriter, r *http.Request) {
-	logDebug("HTTP %s %s?%s from %s", r.Method, r.URL.Path, r.URL.RawQuery, r.RemoteAddr)
+	logger.Debug("HTTP %s %s?%s from %s", r.Method, r.URL.Path, r.URL.RawQuery, r.RemoteAddr)
 	fileParam := r.URL.Query().Get("rrd")
 
 	var files []string
@@ -364,28 +339,28 @@ func metricsHandler(w http.ResponseWriter, r *http.Request) {
 
 	var all []Metric
 
-	for _, f := range files {
-		name := strings.TrimSuffix(filepath.Base(f), ".rrd")
+	for _, file := range files {
+		name := strings.TrimSuffix(filepath.Base(file), ".rrd")
 		// Try cache first
-		if cached, ok := getFromCache(f); ok {
-			logDebug("Cache hit for %s", f)
+		if cached, ok := getFromCache(file); ok {
+			logger.Debug("Cache hit for %s", file)
 			all = append(all, cached...)
 			continue
 		}
 
-		logDebug("Cache miss for %s", f)
+		logger.Debug("Cache miss for %s", file)
 
-		metrics, err := readRRD(f, name)
+		metrics, err := readRRD(file, name)
 		if err != nil {
 			writeJSONError(w, http.StatusInternalServerError, "RRD files reading error", err.Error())
 			return
 		}
 		if len(metrics) == 0 {
-			writeJSONError(w, http.StatusNotFound, "No data found in RRD file", filepath.Base(f))
+			writeJSONError(w, http.StatusNotFound, "No data found in RRD file", filepath.Base(file))
 			return
 		}
 
-		setCache(f, metrics)
+		setCache(file, metrics)
 		all = append(all, metrics...)
 	}
 
@@ -401,24 +376,21 @@ func main() {
 	}
 
 	// Get log level
-	logLevel = strings.ToLower(os.Getenv("LOG_LEVEL"))
-	if logLevel == "" {
-		logLevel = "info"
-	}
-
+	logLevel := os.Getenv("LOG_LEVEL")
+	logger.SetLevel(logLevel)
 	// Get cache TTL
 	if ttlStr := os.Getenv("CACHE_TTL"); ttlStr != "" {
 		if ttl, err := strconv.ParseInt(ttlStr, 10, 64); err == nil && ttl > 0 {
 			cacheTTL = ttl
-			logInfo("Cache TTL set to %d seconds", cacheTTL)
+			logger.Info("Cache TTL set to %d seconds", cacheTTL)
 		} else {
-			logError("Invalid CACHE_TTL value: %s", ttlStr)
+			logger.Error("Invalid CACHE_TTL value: %s", ttlStr)
 		}
 	}
 
 	// Check rrdtool
 	if _, err := exec.LookPath("rrdtool"); err != nil {
-		logFatal("rrdtool not found in PATH")
+		logger.Fatal("rrdtool not found in PATH")
 	}
 
 	http.HandleFunc("/health", healthHandler)
@@ -428,14 +400,14 @@ func main() {
 	http.HandleFunc("/metrics", basicAuth(metricsHandler))
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		logError("HTTP %s %s?%s (404) from %s", r.Method, r.URL.Path, r.URL.RawQuery, r.RemoteAddr)
+		logger.Error("HTTP %s %s?%s (404) from %s", r.Method, r.URL.Path, r.URL.RawQuery, r.RemoteAddr)
 	})
 
-	logInfo("RRD Exporter running on port %s", port)
+	logger.Info("RRD Exporter running on port %s", port)
 
 	err := http.ListenAndServe(":"+port, nil)
 	if err != nil {
-		logFatal("Server stopped %v", err)
+		logger.Fatal("Server stopped %v", err)
 	}
 
 }
