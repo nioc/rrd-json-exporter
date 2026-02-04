@@ -401,8 +401,8 @@ func metricsHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if len(metrics) == 0 {
-			writeJSONError(w, http.StatusNotFound, "No data found in RRD file", filepath.Base(file))
-			return
+			logger.Error("No data found in %s RRD file", filepath.Base(file))
+			continue
 		}
 
 		setCache(key, metrics)
