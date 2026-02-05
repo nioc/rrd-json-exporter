@@ -201,6 +201,8 @@ Use the Infinity Datasource plugin.
 
 #### Use in dashboard
 
+You can import the [sample dashboard](./docs/Containers.json).
+
 - Add a variable: Settings > Variables > **New variable**
   - Type: `Query`
   - Name: `rrdfile`
