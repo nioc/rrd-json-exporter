@@ -9,127 +9,25 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"rrd-json-exporter/cache"
 	"rrd-json-exporter/logger"
+	"rrd-json-exporter/types"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
-)
-
-// RRDInfo describes an RRD file created by Munin.
-type RRDInfo struct {
-	Nodename string `json:"nodename"`
-	Plugin   string `json:"plugin"`
-	Field    string `json:"field"`
-	Type     string `json:"type"`
-	Name     string `json:"name"`
-}
-
-// Metric represents a single datapoint extracted from an RRD file.
-type Metric struct {
-	Name      string  `json:"n"`
-	Timestamp int64   `json:"t"`
-	Value     float64 `json:"v"`
-}
-
-// ListCacheEntry stores rrd files name and expiration timestamp.
-type ListCacheEntry struct {
-	List       []byte
-	Expiration int64
-}
-
-// MetricsCacheEntry stores metrics and expiration timestamp.
-type MetricsCacheEntry struct {
-	Metrics    []Metric
-	Expiration int64
-}
-
-// ErrorResponse represents an error.
-type ErrorResponse struct {
-	Status  string `json:"status"`
-	Message string `json:"message"`
-	Details any    `json:"details"`
-}
-
-var (
-	listCache      = map[string]ListCacheEntry{}
-	listCacheMutex sync.RWMutex
-	listCacheTTL   int64 = 1800 // default TTL in seconds
-)
-var (
-	metricsCache      = make(map[string]MetricsCacheEntry)
-	metricsCacheMutex sync.RWMutex
-	metricsCacheTTL   int64 = 60 // default TTL in seconds
 )
 
 // Default rounding "from" and "to" timestamps to 300 seconds (5 minutes)
 var roundStep = int64(300)
 
-// writeJSONError sends a structured JSON error response and logs it.
-func writeJSONError(w http.ResponseWriter, status int, message string, details any) {
+// writeError sends a structured JSON error response and logs it.
+func writeError(w http.ResponseWriter, status int, message string, details any) {
 	logger.Error("%s | details: %v", message, details)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 
-	json.NewEncoder(w).Encode(ErrorResponse{"error", message, details})
-}
-
-// Caching functions
-
-// getListCacheKey returns the cache key corresponding to the /list request.
-func getListCacheKey(filter string, details bool) string {
-	return fmt.Sprintf("list|%s|%t", filter, details)
-}
-
-// getMetricsCacheKey returns the cache key corresponding to the request.
-func getMetricsCacheKey(path string, start, end int64) string {
-	return fmt.Sprintf("%s|%d|%d", path, start, end)
-}
-
-// getListFromCache returns cached RRD files list if still valid.
-func getListFromCache(key string) ([]byte, bool) {
-	listCacheMutex.RLock()
-	entry, ok := listCache[key]
-	listCacheMutex.RUnlock()
-
-	if !ok || time.Now().Unix() > entry.Expiration {
-		return nil, false
-	}
-
-	return entry.List, true
-}
-
-// getMetricsFromCache returns cached metrics if still valid.
-func getMetricsFromCache(key string) ([]Metric, bool) {
-	metricsCacheMutex.RLock()
-	entry, ok := metricsCache[key]
-	metricsCacheMutex.RUnlock()
-
-	if !ok || time.Now().Unix() > entry.Expiration {
-		return nil, false
-	}
-	return entry.Metrics, true
-}
-
-// setListCache stores RRD files list in the cache.
-func setListCache(key string, list []byte) {
-	listCacheMutex.Lock()
-	listCache[key] = ListCacheEntry{
-		List:       list,
-		Expiration: time.Now().Unix() + listCacheTTL,
-	}
-	listCacheMutex.Unlock()
-}
-
-// setMetricsCache stores metrics in the cache.
-func setMetricsCache(key string, metrics []Metric) {
-	metricsCacheMutex.Lock()
-	metricsCache[key] = MetricsCacheEntry{
-		Metrics:    metrics,
-		Expiration: time.Now().Unix() + metricsCacheTTL,
-	}
-	metricsCacheMutex.Unlock()
+	json.NewEncoder(w).Encode(types.ErrorResponse{Status: "error", Message: message, Details: details})
 }
 
 // getTtl reads environment variable and returns its value.
@@ -144,39 +42,8 @@ func getTtl(key string) (int64, bool) {
 	return 0, false
 }
 
-// startCacheCleaner initializes regular cache cleaning.
-func startCacheCleaner() {
-	go func() {
-		ticker := time.NewTicker(10 * time.Minute)
-		defer ticker.Stop()
-
-		for range ticker.C {
-			logger.Trace("Performing cache purge")
-			now := time.Now().Unix()
-
-			metricsCacheMutex.Lock()
-			for key, entry := range metricsCache {
-				if entry.Expiration < now {
-					logger.Trace("Removing the metrics cache key %s", key)
-					delete(metricsCache, key)
-				}
-			}
-			metricsCacheMutex.Unlock()
-
-			listCacheMutex.Lock()
-			for key, entry := range listCache {
-				if entry.Expiration < now {
-					logger.Trace("Removing the list cache key %s", key)
-					delete(listCache, key)
-				}
-			}
-			listCacheMutex.Unlock()
-		}
-	}()
-}
-
 // readRRD executes "rrdtool fetch" and parses the output into metrics.
-func readRRD(path string, name string, start, end int64) ([]Metric, error) {
+func readRRD(path string, name string, start, end int64) ([]types.Metric, error) {
 	args := []string{"fetch", path, "AVERAGE"}
 	if start > 0 {
 		args = append(args, "--start", strconv.FormatInt(start, 10))
@@ -194,7 +61,7 @@ func readRRD(path string, name string, start, end int64) ([]Metric, error) {
 	}
 
 	lines := bytes.Split(out, []byte{'\n'})
-	var metrics []Metric
+	var metrics []types.Metric
 
 	// Ignore first 2 lines (headers)
 	for _, line := range lines[2:] {
@@ -221,7 +88,7 @@ func readRRD(path string, name string, start, end int64) ([]Metric, error) {
 			continue
 		}
 
-		metrics = append(metrics, Metric{
+		metrics = append(metrics, types.Metric{
 			Name:      name,
 			Timestamp: ts,
 			Value:     val,
@@ -242,12 +109,11 @@ func validateRRDFile(name string) bool {
 	return validRRD.MatchString(name)
 }
 
-// Check Authorization
+// basicAuth checks Authorization.
 func basicAuth(next http.HandlerFunc) http.HandlerFunc {
 	user := os.Getenv("AUTH_USER")
 	pass := os.Getenv("AUTH_PASS")
 
-	// Si pas configuré → pas d’auth
 	if user == "" || pass == "" {
 		return next
 	}
@@ -256,14 +122,14 @@ func basicAuth(next http.HandlerFunc) http.HandlerFunc {
 		u, p, ok := r.BasicAuth()
 		if !ok || u != user || p != pass {
 			w.Header().Set("WWW-Authenticate", `Basic realm="Restricted"`)
-			writeJSONError(w, http.StatusUnauthorized, "Unauthorized", nil)
+			writeError(w, http.StatusUnauthorized, "Unauthorized", nil)
 			return
 		}
 		next(w, r)
 	}
 }
 
-// Verifies that the regular expression compiles within a timeout while checking backtracking
+// compileRegexSafe verifies that the regular expression compiles within a timeout while checking backtracking.
 func compileRegexSafe(pattern string, timeout time.Duration) (*regexp.Regexp, error) {
 	re, err := regexp.Compile(pattern)
 	if err != nil {
@@ -286,8 +152,8 @@ func compileRegexSafe(pattern string, timeout time.Duration) (*regexp.Regexp, er
 	}
 }
 
-// Parses the name of the rrd file created by munin to provide information about it.
-func parseRRDName(filename string) (*RRDInfo, error) {
+// parseRRDName parses the name of the rrd file created by munin to provide information about it.
+func parseRRDName(filename string) (*types.RRDInfo, error) {
 	if !strings.HasSuffix(filename, ".rrd") {
 		return nil, fmt.Errorf("not an rrd file")
 	}
@@ -318,7 +184,7 @@ func parseRRDName(filename string) (*RRDInfo, error) {
 		typeName = rrdType
 	}
 
-	return &RRDInfo{
+	return &types.RRDInfo{
 		Nodename: nodename,
 		Plugin:   plugin,
 		Field:    field,
@@ -327,7 +193,7 @@ func parseRRDName(filename string) (*RRDInfo, error) {
 	}, nil
 }
 
-// Converts a timestamp string in milliseconds to an integer in seconds.
+// getTimestamp converts a timestamp string in milliseconds to an integer in seconds.
 func getTimestamp(tsStr string, isFrom bool) int64 {
 	if tsStr != "" {
 		tsMs, err := strconv.ParseInt(tsStr, 10, 64)
@@ -349,7 +215,7 @@ func getTimestamp(tsStr string, isFrom bool) int64 {
 	return 0
 }
 
-// Returns a simple OK status for container health checks.
+// healthHandler returns a simple OK status for container health checks.
 func healthHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -358,18 +224,18 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// Returns the list of available RRD files.
+// listHandler returns the list of available RRD files.
 func listHandler(w http.ResponseWriter, r *http.Request) {
 	logger.Debug("HTTP %s %s?%s from %s", r.Method, r.URL.Path, r.URL.RawQuery, r.RemoteAddr)
 
 	filter := r.URL.Query().Get("filter")
 	isDetailled := r.URL.Query().Has("details")
-	key := getListCacheKey(filter, isDetailled)
+	key := cache.GetListKey(filter, isDetailled)
 
 	w.Header().Set("Content-Type", "application/json")
 
 	// Try cache first
-	if list, ok := getListFromCache(key); ok {
+	if list, ok := cache.GetList(key); ok {
 		logger.Trace("Cache hit for /list key=%s", key)
 		w.Write(list)
 		return
@@ -379,7 +245,7 @@ func listHandler(w http.ResponseWriter, r *http.Request) {
 
 	files, err := os.ReadDir("rrd")
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "RRD directory read error", err.Error())
+		writeError(w, http.StatusInternalServerError, "RRD directory read error", err.Error())
 		return
 	}
 
@@ -388,7 +254,7 @@ func listHandler(w http.ResponseWriter, r *http.Request) {
 		// Check the provided regex
 		re, err = compileRegexSafe(filter, 10*time.Millisecond)
 		if err != nil {
-			writeJSONError(w, http.StatusBadRequest, "Invalid or unsafe regex", err.Error())
+			writeError(w, http.StatusBadRequest, "Invalid or unsafe regex", err.Error())
 			return
 		}
 	}
@@ -405,11 +271,11 @@ func listHandler(w http.ResponseWriter, r *http.Request) {
 
 	var list []byte
 	if isDetailled {
-		namesWithDetails := make([]RRDInfo, 0, len(names))
+		namesWithDetails := make([]types.RRDInfo, 0, len(names))
 		for _, name := range names {
 			info, err := parseRRDName(name)
 			if err != nil {
-				namesWithDetails = append(namesWithDetails, RRDInfo{
+				namesWithDetails = append(namesWithDetails, types.RRDInfo{
 					Nodename: "?",
 					Plugin:   "?",
 					Field:    "?",
@@ -422,21 +288,21 @@ func listHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		list, err = json.Marshal(namesWithDetails)
 		if err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "JSON encoding error", err.Error())
+			writeError(w, http.StatusInternalServerError, "JSON encoding error", err.Error())
 			return
 		}
 	} else {
 		list, err = json.Marshal(names)
 		if err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "JSON encoding error", err.Error())
+			writeError(w, http.StatusInternalServerError, "JSON encoding error", err.Error())
 			return
 		}
 	}
-	setListCache(key, list)
+	cache.SetList(key, list)
 	w.Write(list)
 }
 
-// Returns metrics from one or all RRD files.
+// metricsHandler returns metrics from one or all RRD files.
 func metricsHandler(w http.ResponseWriter, r *http.Request) {
 	logger.Debug("HTTP %s %s?%s from %s", r.Method, r.URL.Path, r.URL.RawQuery, r.RemoteAddr)
 	fileParam := r.URL.Query().Get("rrd")
@@ -452,15 +318,15 @@ func metricsHandler(w http.ResponseWriter, r *http.Request) {
 		var err error
 		files, err = filepath.Glob("rrd/*.rrd")
 		if err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "RRD directory read error", err.Error())
+			writeError(w, http.StatusInternalServerError, "RRD directory read error", err.Error())
 			return
 		}
 		if len(files) == 0 {
-			writeJSONError(w, http.StatusNotFound, "No RRD files found", nil)
+			writeError(w, http.StatusNotFound, "No RRD files found", nil)
 			return
 		}
 		if len(files) > 100 {
-			writeJSONError(w, http.StatusBadRequest, "Too many RRD files", len(files))
+			writeError(w, http.StatusBadRequest, "Too many RRD files", len(files))
 			return
 		}
 	} else {
@@ -475,7 +341,7 @@ func metricsHandler(w http.ResponseWriter, r *http.Request) {
 			file = strings.TrimSpace(file)
 
 			if !validateRRDFile(file) {
-				writeJSONError(w, http.StatusBadRequest, "Invalid filename", file)
+				writeError(w, http.StatusBadRequest, "Invalid filename", file)
 				return
 			}
 			full := filepath.Join("rrd", file)
@@ -487,13 +353,13 @@ func metricsHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	var all []Metric
+	var all []types.Metric
 
 	for _, file := range files {
 		name := strings.TrimSuffix(filepath.Base(file), ".rrd")
 		// Try cache first
-		key := getMetricsCacheKey(file, start, end)
-		if cached, ok := getMetricsFromCache(key); ok {
+		key := cache.GetMetricsKey(file, start, end)
+		if cached, ok := cache.GetMetrics(key); ok {
 			logger.Trace("Cache hit for %s", key)
 			all = append(all, cached...)
 			continue
@@ -503,7 +369,7 @@ func metricsHandler(w http.ResponseWriter, r *http.Request) {
 
 		metrics, err := readRRD(file, name, start, end)
 		if err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "RRD files reading error", err.Error())
+			writeError(w, http.StatusInternalServerError, "RRD files reading error", err.Error())
 			return
 		}
 		if len(metrics) == 0 {
@@ -511,7 +377,7 @@ func metricsHandler(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		setMetricsCache(key, metrics)
+		cache.SetMetrics(key, metrics)
 		all = append(all, metrics...)
 	}
 
@@ -547,14 +413,14 @@ func main() {
 
 	// Get cache TTL
 	if ttl, ok := getTtl("CACHE_TTL_METRICS"); ok {
-		metricsCacheTTL = ttl
+		cache.MetricsTTL = ttl
 	}
-	logger.Info("Metrics cache TTL set to %d seconds", metricsCacheTTL)
+	logger.Info("Metrics cache TTL set to %d seconds", cache.MetricsTTL)
 
 	if ttl, ok := getTtl("CACHE_TTL_LIST"); ok {
-		listCacheTTL = ttl
+		cache.ListTTL = ttl
 	}
-	logger.Info("List cache TTL set to %d seconds", listCacheTTL)
+	logger.Info("List cache TTL set to %d seconds", cache.ListTTL)
 
 	http.HandleFunc("/health", healthHandler)
 
@@ -568,7 +434,7 @@ func main() {
 
 	logger.Info("RRD JSON Exporter running on port %s", port)
 
-	startCacheCleaner()
+	cache.StartCacheCleaner()
 
 	err := http.ListenAndServe(":"+port, nil)
 	if err != nil {
