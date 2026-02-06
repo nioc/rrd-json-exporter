@@ -219,8 +219,18 @@ func getTimestamp(tsStr string, isFrom bool) int64 {
 func healthHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{
+	if !r.URL.Query().Has("details") {
+		json.NewEncoder(w).Encode(map[string]string{
+			"status": "ok",
+		})
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]any{
 		"status": "ok",
+		"cache": map[string]int{
+			"lists":   cache.GetListSize(),
+			"metrics": cache.GetMetricsSize(),
+		},
 	})
 }
 

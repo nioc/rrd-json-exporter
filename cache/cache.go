@@ -98,6 +98,20 @@ func purgeCache[T any](cache map[string]T, cacheMutex *sync.RWMutex, expired fun
 	cacheMutex.Unlock()
 }
 
+// GetListSize returns number of cached RRD files list.
+func GetListSize() int {
+	listCacheMutex.RLock()
+	defer listCacheMutex.RUnlock()
+	return len(listCache)
+}
+
+// GetMetricsSize returns number of cached RRD files list.
+func GetMetricsSize() int {
+	metricsCacheMutex.RLock()
+	defer metricsCacheMutex.RUnlock()
+	return len(metricsCache)
+}
+
 // StartCacheCleaner initializes regular cache cleaning.
 func StartCacheCleaner() {
 	go func() {
