@@ -1,19 +1,32 @@
+ARG GO_VERSION=1.25
+
+
+### Create base image ###
 FROM alpine:3.23 AS base
+RUN addgroup -S rrd && adduser -S rrd -G rrd \
+  && apk add --no-cache rrdtool
 
-RUN addgroup -S rrd && adduser -S rrd -G rrd
 
-FROM golang:1.25-alpine AS builder
-RUN apk add --no-cache build-base
+### Compile Go binary ##
+FROM golang:${GO_VERSION}-alpine AS builder
 WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -o rrd-json-exporter .
+ARG GIT_COMMIT=unspecified
+ARG BUILD_DATE
+ARG VERSION=unspecified
+RUN CGO_ENABLED=0 GOOS=linux go build \
+  -trimpath \
+  -ldflags "-s -w \
+  -X main.Version=$VERSION \
+  -X main.Commit=$GIT_COMMIT \
+  -X main.BuildDate=$BUILD_DATE" \
+  -o rrd-json-exporter .
 
+
+### Copy binary in base image ###
 FROM base
-
-RUN apk add --no-cache rrdtool
-
 WORKDIR /app
 COPY --from=builder /app/rrd-json-exporter .
 

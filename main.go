@@ -17,6 +17,13 @@ import (
 	"time"
 )
 
+// Debug info
+var (
+	Version   = "dev"
+	Commit    = "unknown"
+	BuildDate = "unknown"
+)
+
 // Default rounding "from" and "to" timestamps to 300 seconds (5 minutes)
 var roundStep = int64(300)
 
@@ -227,6 +234,11 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	json.NewEncoder(w).Encode(map[string]any{
 		"status": "ok",
+		"build": map[string]string{
+			"version": Version,
+			"commit":  Commit,
+			"date":    BuildDate,
+		},
 		"cache": map[string]int{
 			"lists":   cache.GetListSize(),
 			"metrics": cache.GetMetricsSize(),
