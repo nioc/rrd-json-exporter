@@ -5,6 +5,11 @@ on:
     tags:
       - "*"
   workflow_dispatch:
+    inputs:
+      skip_docker:
+        description: "Skip docker job"
+        required: false
+        default: "false"
 
 env:
   GO_VERSION: "1.25"
@@ -53,6 +58,7 @@ jobs:
 
   docker:
     name: Build & Push Multi-Arch Docker image
+    if: github.event_name != 'workflow_dispatch' || inputs.skip_docker != 'true'
     runs-on: ubuntu-latest
     needs: build
 
@@ -101,6 +107,20 @@ jobs:
     name: Create GitHub Release
     runs-on: ubuntu-latest
     needs: [build, docker]
+    if: |
+      (
+        github.event_name == 'push' &&
+        needs.build.result == 'success' &&
+        needs.docker.result == 'success'
+      )
+      ||
+      (
+        github.event_name == 'workflow_dispatch' &&
+        (
+          (inputs.skip_docker == 'true' && needs.build.result == 'success') ||
+          (inputs.skip_docker != 'true' && needs.build.result == 'success' && needs.docker.result == 'success')
+        )
+      )
 
     permissions:
       contents: write
@@ -151,11 +171,15 @@ jobs:
           add_section "🚀 CI/CD" "ci"
           add_section "🔧 Build" "build"
 
-          if ! echo "$CHANGELOG" | grep -q "## "; then
+          if ! echo -e "$CHANGELOG" | grep -q "## "; then
             CHANGELOG+="_No changes in this release_\n"
           fi
 
-          CHANGELOG_ESCAPED=$(printf "%s" "$CHANGELOG" | sed 's/%/%25/g; s/\n/%0A/g; s/\r/%0D/g')
+          CHANGELOG_ESCAPED=$(printf "%s" "$CHANGELOG" \
+            | sed ':a;N;$!ba;s/\n/\\n/g')
+
+          CHANGELOG_ESCAPED=$(printf "%s" "$CHANGELOG_ESCAPED" \
+            | sed 's/%/%25/g; s/\r/%0D/g')
 
           echo "text=$CHANGELOG_ESCAPED" >> "$GITHUB_OUTPUT"
 
