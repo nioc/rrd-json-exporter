@@ -108,33 +108,32 @@ jobs:
     runs-on: ubuntu-latest
     needs: [build, docker]
     if: |
-      (
-        github.event_name == 'push' &&
-        needs.build.result == 'success' &&
-        needs.docker.result == 'success'
-      )
-      ||
-      (
-        github.event_name == 'workflow_dispatch' &&
-        (
-          (inputs.skip_docker == 'true' && needs.build.result == 'success') ||
-          (inputs.skip_docker != 'true' && needs.build.result == 'success' && needs.docker.result == 'success')
-        )
-      )
+      always() && ((
+          github.event_name == 'push' &&
+          needs.build.result == 'success' &&
+          needs.docker.result == 'success'
+        ) || (
+          github.event_name == 'workflow_dispatch' &&
+          (
+            (inputs.skip_docker == 'true' && needs.build.result == 'success') ||
+            (inputs.skip_docker != 'true' && needs.build.result == 'success' && needs.docker.result == 'success')
+          )
+        ))
 
     permissions:
       contents: write
 
     steps:
-      - name: Download binaries
-        uses: actions/download-artifact@v4
-        with:
-          path: ./dist
-
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Download binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: ./dist
+          merge-multiple: true
 
       - name: Generate changelog from conventional commits
         id: changelog
@@ -148,45 +147,57 @@ jobs:
           else
             RANGE="$PREV_TAG..$CURR_TAG"
           fi
+          echo "Range: $RANGE"
 
-          CHANGELOG="# Changelog for $CURR_TAG\n\n"
+          TMPFILE=$(mktemp)
 
           add_section() {
             local title="$1"
             local pattern="$2"
             local commits
-            commits=$(git log $RANGE --pretty=format:'%s' | grep "^$pattern" || true)
+            commits=$(git log $RANGE --pretty=format:'%s %h' | grep "^$pattern" || true)
             if [ -n "$commits" ]; then
-              CHANGELOG+="## $title\n"
-              CHANGELOG+=$(echo "$commits" | sed 's/^/- /')
-              CHANGELOG+="\n\n"
+              echo "### $title" >> "$TMPFILE"
+              echo "$commits" \
+                | sed -E "s/^$pattern\(([^\)]+)\): /\[\1\] /" \
+                | sed -E "s/^$pattern: //" \
+                | sed 's/^/- /' \
+                >> "$TMPFILE"
+              echo >> "$TMPFILE"
             fi
           }
 
-          add_section "✨ Features" "feat"
-          add_section "🐛 Fixes" "fix"
-          add_section "♻️ Refactors" "refactor"
-          add_section "📦 Chores" "chore"
-          add_section "📝 Docs" "docs"
+          add_section "💡 Features" "feat"
+          add_section "🪲 Bug fixes" "fix"
+          add_section "🛠️ Refactors" "refactor"
+          add_section "🧹 Chores" "chore"
+          add_section "📚 Docs" "docs"
           add_section "🚀 CI/CD" "ci"
-          add_section "🔧 Build" "build"
 
-          if ! echo -e "$CHANGELOG" | grep -q "## "; then
-            CHANGELOG+="_No changes in this release_\n"
+          if ! grep -q "### " "$TMPFILE"; then
+            echo "_No changes in this release_" >> "$TMPFILE"
+            echo >> "$TMPFILE"
           fi
 
+          echo "**Full Changelog**: https://github.com/$GITHUB_REPOSITORY/compare/$PREV_TAG...$CURR_TAG " >> "$TMPFILE"
+
+          CHANGELOG=$(cat "$TMPFILE")
           CHANGELOG_ESCAPED=$(printf "%s" "$CHANGELOG" \
-            | sed ':a;N;$!ba;s/\n/\\n/g')
+            | sed -e 's/%/%25/g' \
+                  -e 's/\r/%0D/g' \
+                  -e ':a;N;$!ba;s/\n/%0A/g')
 
-          CHANGELOG_ESCAPED=$(printf "%s" "$CHANGELOG_ESCAPED" \
-            | sed 's/%/%25/g; s/\r/%0D/g')
+          echo "raw<<EOF" >> "$GITHUB_OUTPUT"
+          cat "$TMPFILE" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
 
-          echo "text=$CHANGELOG_ESCAPED" >> "$GITHUB_OUTPUT"
+          echo "Changelog:"
+          cat "$TMPFILE"
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
-          body: ${{ steps.changelog.outputs.text }}
-          files: ./dist/**
+          body: ${{ steps.changelog.outputs.raw }}
+          files: dist/*
